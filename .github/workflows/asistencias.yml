@@ -17,88 +17,72 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           python3 <<'EOF'
-import os
-import csv
-import io
-import json
-import urllib.request
-from datetime import datetime
+        import os
+        import csv
+        import io
+        import json
+        import urllib.request
+        from datetime import datetime
 
-FILA_INICIO = 10
+        FILA_INICIO = 10
 
-actor = os.environ["ACTOR"].lower()
-csv_raw = os.environ["ALUMNOS_CSV"]
-config = json.loads(os.environ["ASISTENCIA_CONFIG"])
+        actor = os.environ["ACTOR"].lower()
+        csv_raw = os.environ["ALUMNOS_CSV"]
+        config = json.loads(os.environ["ASISTENCIA_CONFIG"])
 
-# =============================
-# Cargar alumnos desde CSV
-# =============================
+        f = io.StringIO(csv_raw)
+        reader = csv.reader(f, delimiter=';')
 
-f = io.StringIO(csv_raw)
-reader = csv.reader(f, delimiter=';')
+        next(reader, None)  # saltar cabecera
 
-next(reader, None)  # saltar cabecera
+        numero_alumno = None
 
-numero_alumno = None
+        for row in reader:
+            if len(row) < 4:
+                continue
 
-for row in reader:
-    if len(row) < 4:
-        continue
+            nombre, numero, grupo, github = [x.strip() for x in row[:4]]
 
-    nombre, numero, grupo, github = [x.strip() for x in row[:4]]
+            if github.lower() == actor:
+                numero_alumno = numero
+                break
 
-    if github.lower() == actor:
-        numero_alumno = numero
-        break
+            if not numero_alumno:
+                print("Usuario no autorizado")
+                exit(1)
 
-if not numero_alumno:
-    print("Usuario no autorizado")
-    exit(1)
+            hoy = datetime.now().strftime("%Y-%m-%d")
 
-# =============================
-# Validar fecha (España ya viene correcta en secret)
-# =============================
+            if hoy != config["fecha"]:
+                print("Fecha no válida")
+                exit(1)
 
-hoy = datetime.now().strftime("%Y-%m-%d")
+            ahora = datetime.now().strftime("%H:%M")
 
-if hoy != config["fecha"]:
-    print("Fecha no válida")
-    exit(1)
+            if not (config["hora_inicio"] <= ahora <= config["hora_fin"]):
+                print("Fuera de horario permitido")
+                exit(1)
 
-# =============================
-# Validar rango horario
-# =============================
+            data = json.dumps({
+                "numero": numero_alumno,
+                "columna": config["columna"],
+                "filaInicio": FILA_INICIO
+            }).encode("utf-8")
 
-ahora = datetime.now().strftime("%H:%M")
+            req = urllib.request.Request(
+                os.environ["SHEETS_WEBHOOK"],
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
 
-if not (config["hora_inicio"] <= ahora <= config["hora_fin"]):
-    print("Fuera de horario permitido")
-    exit(1)
+            try:
+              response = urllib.request.urlopen(req)
+              print(response.read().decode())
+            except Exception as e:
+              print("Error enviando a Sheets:", e)
+              exit(1)
 
-# =============================
-# Enviar a Google Sheets
-# =============================
+          print("Asistencia registrada correctamente")
 
-data = json.dumps({
-    "numero": numero_alumno,
-    "columna": config["columna"],
-    "filaInicio": FILA_INICIO
-}).encode("utf-8")
-
-req = urllib.request.Request(
-    os.environ["SHEETS_WEBHOOK"],
-    data=data,
-    headers={"Content-Type": "application/json"},
-    method="POST"
-)
-
-try:
-    response = urllib.request.urlopen(req)
-    print(response.read().decode())
-except Exception as e:
-    print("Error enviando a Sheets:", e)
-    exit(1)
-
-print("Asistencia registrada correctamente")
-
-EOF
+          EOF

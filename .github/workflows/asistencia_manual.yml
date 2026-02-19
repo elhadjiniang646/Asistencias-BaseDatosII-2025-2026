@@ -1,7 +1,7 @@
 name: Registrar Asistencia Manual (Reprocesar PR)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch
 
 jobs:
   procesar_pr:
@@ -17,113 +17,102 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           python3 <<'EOF'
-import os
-import csv
-import io
-import json
-import urllib.request
-from datetime import datetime
+            import os
+        import csv
+        import io
+        import json
+        import urllib.request
+        from datetime import datetime
 
-FILA_INICIO = 10
+        FILA_INICIO = 10
 
-token = os.environ["GITHUB_TOKEN"]
-repo = os.environ["REPO"]
-config = json.loads(os.environ["ASISTENCIA_CONFIG"])
+        token = os.environ["GITHUB_TOKEN"]
+        repo = os.environ["REPO"]
+        config = json.loads(os.environ["ASISTENCIA_CONFIG"])
 
-fecha = config["fecha"]
-hora_inicio = config["hora_inicio"]
-hora_fin = config["hora_fin"]
-columna = int(config["columna"])
+        fecha = config["fecha"]
+        hora_inicio = config["hora_inicio"]
+        hora_fin = config["hora_fin"]
+        columna = int(config["columna"])
 
-# =============================
-# Cargar alumnos
-# =============================
 
-csv_raw = os.environ["ALUMNOS_CSV"]
-f = io.StringIO(csv_raw)
-reader = csv.reader(f, delimiter=';')
-next(reader, None)
+        csv_raw = os.environ["ALUMNOS_CSV"]
+        f = io.StringIO(csv_raw)
+        reader = csv.reader(f, delimiter=';')
+        next(reader, None)
 
-alumnos = {}
-for row in reader:
-    if len(row) < 4:
-        continue
-    nombre, numero, grupo, github = [x.strip() for x in row[:4]]
-    alumnos[github.lower()] = numero
+        alumnos = {}
+        for row in reader:
+          if len(row) < 4:
+            continue
+        nombre, numero, grupo, github = [x.strip() for x in row[:4]]
+        alumnos[github.lower()] = numero
 
-# =============================
-# Obtener PR desde API GitHub
-# =============================
+        url = f"https://api.github.com/repos/{repo}/pulls?state=all&per_page=100"
 
-url = f"https://api.github.com/repos/{repo}/pulls?state=all&per_page=100"
+        req = urllib.request.Request(
+          url,
+          headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json"
+          }
+        )
 
-req = urllib.request.Request(
-    url,
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json"
-    }
-)
+        response = urllib.request.urlopen(req)
+        prs = json.loads(response.read().decode())
 
-response = urllib.request.urlopen(req)
-prs = json.loads(response.read().decode())
+        print(f"PR encontrados: {len(prs)}")
+        print(f"Filtrando por fecha {fecha} entre {hora_inicio} y {hora_fin}")
 
-print(f"PR encontrados: {len(prs)}")
-print(f"Filtrando por fecha {fecha} entre {hora_inicio} y {hora_fin}")
+        procesados = 0
 
-# =============================
-# Procesar PR
-# =============================
+        for pr in prs:
+          created_at = pr["created_at"]  # UTC
+          user = pr["user"]["login"].lower()
 
-procesados = 0
+          from zoneinfo import ZoneInfo
 
-for pr in prs:
-    created_at = pr["created_at"]  # UTC
-    user = pr["user"]["login"].lower()
+          dt_utc = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+          dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
 
-    from zoneinfo import ZoneInfo
+          dt_spain = dt_utc.astimezone(ZoneInfo("Europe/Madrid"))
 
-    dt_utc = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
-    dt_utc = dt_utc.replace(tzinfo=ZoneInfo("UTC"))
+          fecha_pr = dt_spain.strftime("%Y-%m-%d")
+          hora_pr = dt_spain.strftime("%H:%M")
 
-    dt_spain = dt_utc.astimezone(ZoneInfo("Europe/Madrid"))
+          if fecha_pr != fecha:
+            continue
 
-    fecha_pr = dt_spain.strftime("%Y-%m-%d")
-    hora_pr = dt_spain.strftime("%H:%M")
+          if not (hora_inicio <= hora_pr <= hora_fin):
+            continue
 
-    if fecha_pr != fecha:
-        continue
+          if user not in alumnos:
+            continue
 
-    if not (hora_inicio <= hora_pr <= hora_fin):
-        continue
+          numero = alumnos[user]
 
-    if user not in alumnos:
-        continue
+          print(f"Registrando {user} ({numero})")
 
-    numero = alumnos[user]
+          data = json.dumps({
+            "numero": numero,
+            "columna": columna,
+            "filaInicio": FILA_INICIO
+          }).encode("utf-8")
 
-    print(f"Registrando {user} ({numero})")
+          req_sheet = urllib.request.Request(
+            os.environ["SHEETS_WEBHOOK"],
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+          )
 
-    data = json.dumps({
-        "numero": numero,
-        "columna": columna,
-        "filaInicio": FILA_INICIO
-    }).encode("utf-8")
+          try:
+            resp = urllib.request.urlopen(req_sheet)
+            print(resp.read().decode())
+            procesados += 1
+          except Exception as e:
+            print("Error enviando:", e)
 
-    req_sheet = urllib.request.Request(
-        os.environ["SHEETS_WEBHOOK"],
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
+        print(f"Proceso finalizado. Total registrados: {procesados}")
 
-    try:
-        resp = urllib.request.urlopen(req_sheet)
-        print(resp.read().decode())
-        procesados += 1
-    except Exception as e:
-        print("Error enviando:", e)
-
-print(f"Proceso finalizado. Total registrados: {procesados}")
-
-EOF
+        EOF
